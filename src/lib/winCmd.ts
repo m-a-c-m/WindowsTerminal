@@ -18,6 +18,7 @@ import {
 
 export interface CmdOptions {
   isEs: boolean;
+  mode?: "cmd" | "ps";
 }
 
 export interface CmdResult {
@@ -26,12 +27,14 @@ export interface CmdResult {
   cwd: string[];
   clear: boolean;
   exit: boolean;
+  error?: boolean;
 }
 
 export const HOME = ["Users", "Estudiante"];
 
-export function promptString(cwd: string[]): string {
-  return `${pathToString(cwd)}>`;
+export function promptString(cwd: string[], mode: "cmd" | "ps" = "cmd"): string {
+  const base = `${pathToString(cwd)}>`;
+  return mode === "ps" ? `PS ${pathToString(cwd)}>` : base;
 }
 
 function thousands(n: number): string {
@@ -104,7 +107,7 @@ function err(state: FsState, cwd: string[], lines: string[], isEs: boolean, code
     invalidPath: [isEs ? "La ruta no es válida." : "The path is not valid.", ""],
   };
   const [msg] = messages[code] ?? ["", ""];
-  return ok(state, cwd, [msg]);
+  return { lines: [msg], state, cwd, clear: false, exit: false, error: true };
 }
 
 function tokenize(line: string): string[] {
@@ -397,8 +400,8 @@ export function executeLine(state: FsState, cwd: string[], line: string, opts: C
     }
 
     default:
-      return ok(state, cwd, [isEs
+      return { lines: [isEs
         ? `'${tokens[0]}' no se reconoce como un comando interno o externo. Escribe help para ver los disponibles.`
-        : `'${tokens[0]}' is not recognized as an internal command. Type help to see available ones.`]);
+        : `'${tokens[0]}' is not recognized as an internal command. Type help to see available ones.`], state, cwd, clear: false, exit: false, error: true };
   }
 }

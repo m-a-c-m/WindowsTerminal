@@ -19,7 +19,7 @@ interface Props {
 }
 
 interface OutputEntry {
-  kind: "cmd" | "out" | "ok" | "warn";
+  kind: "cmd" | "out" | "ok" | "warn" | "err";
   text: string;
 }
 
@@ -226,13 +226,15 @@ const COMMAND_NAMES = [
 function bannerLines(isEs: boolean): string[] {
   return isEs
     ? [
-        "Terminal de práctica CMD/PowerShell — Todo lo que haces aquí es simulado, nada toca tu PC real.",
+        "Terminal de práctica CMD / PowerShell — todo es simulado, nada toca tu PC real.",
         "Escribe help para ver los comandos, o elige una lección guiada para empezar.",
+        "Alterna CMD y PowerShell en la barra de la ventana.",
         "",
       ]
     : [
-        "CMD/PowerShell practice terminal — everything here is simulated, nothing touches your PC.",
+        "CMD / PowerShell practice terminal — everything is simulated, nothing touches your PC.",
         "Type help to see the commands, or pick a guided lesson to start.",
+        "Toggle CMD and PowerShell in the window bar.",
         "",
       ];
 }
@@ -253,6 +255,7 @@ export default function WindowsTerminal({ locale }: Props) {
   const [showHint, setShowHint] = useState(false);
   const [ended, setEnded] = useState(false);
   const [cmdsRun, setCmdsRun] = useState<string[]>([]);
+  const [mode, setMode] = useState<"cmd" | "ps">("cmd");
 
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -289,6 +292,7 @@ export default function WindowsTerminal({ locale }: Props) {
     setEntries(bannerLines(isEs).map((t) => ({ kind: "out" as const, text: t })));
     setEnded(false);
     setShowHint(false);
+    setMode("cmd");
   }, [isEs]);
 
   const checkLessonProgress = useCallback((lesson: Lesson, st: FsState, cw: string[], cmds: string[]) => {
@@ -315,10 +319,10 @@ export default function WindowsTerminal({ locale }: Props) {
     const line = input;
     setInput("");
     if (!line.trim()) {
-      setEntries((prev) => [...prev, { kind: "cmd", text: `${promptString(cwd)} ` }]);
+      setEntries((prev) => [...prev, { kind: "cmd", text: `${promptString(cwd, mode)} ` }]);
       return;
     }
-    setEntries((prev) => [...prev, { kind: "cmd", text: `${promptString(cwd)} ${line}` }]);
+    setEntries((prev) => [...prev, { kind: "cmd", text: `${promptString(cwd, mode)} ${line}` }]);
     const nextHistory = [line, ...cmdHistory.filter((h) => h !== line)].slice(0, 60);
     setCmdHistory(nextHistory);
     setHistIdx(-1);
@@ -332,7 +336,10 @@ export default function WindowsTerminal({ locale }: Props) {
       if (result.exit) setEnded(true);
       return;
     }
-    setEntries((prev) => [...prev, ...result.lines.map((t) => ({ kind: "out" as const, text: t }))]);
+    setEntries((prev) => [
+      ...prev,
+      ...result.lines.map((t) => ({ kind: (result.error ? "err" : "out") as OutputEntry["kind"], text: t })),
+    ]);
     setFs(result.state);
     setCwd(result.cwd);
     if (result.exit) {
@@ -346,7 +353,7 @@ export default function WindowsTerminal({ locale }: Props) {
     if (activeLesson) {
       checkLessonProgress(activeLesson, result.state, result.cwd, nextCmds);
     }
-  }, [input, cwd, fs, cmdHistory, doneLessons, persist, isEs, activeLesson, cmdsRun, checkLessonProgress]);
+  }, [input, cwd, fs, cmdHistory, doneLessons, persist, isEs, activeLesson, cmdsRun, checkLessonProgress, mode]);
 
   const handleKey = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -423,6 +430,7 @@ export default function WindowsTerminal({ locale }: Props) {
   const startLesson = useCallback((lesson: Lesson) => {
     setActiveLesson(lesson);
     setShowHint(false);
+    setMode(lesson.id === "powershell" ? "ps" : "cmd");
     const intro = [
       "",
       isEs ? `— ${lesson.titleEs} —` : `— ${lesson.titleEn} —`,
@@ -500,28 +508,56 @@ export default function WindowsTerminal({ locale }: Props) {
         className="overflow-hidden rounded-2xl border border-white/15 bg-black"
         onClick={() => inputRef.current?.focus()}
       >
-        <div className="flex items-center gap-2 border-b border-white/10 bg-white/5 px-4 py-2">
+        <div className="flex items-center gap-2 border-b border-white/10 bg-white/5 px-3 py-2 sm:px-4">
           <span className="h-3 w-3 rounded-full bg-red-500/80" />
           <span className="h-3 w-3 rounded-full bg-yellow-500/80" />
           <span className="h-3 w-3 rounded-full bg-green-500/80" />
-          <span className="ml-2 font-mono text-xs text-white/50">cmd.exe — {pathToString(cwd)}</span>
+          <span className="ml-2 hidden font-mono text-xs text-white/50 sm:inline">{mode === "ps" ? "powershell.exe" : "cmd.exe"} — {pathToString(cwd)}</span>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={() => { setMode("cmd"); }}
+              className={`rounded-md px-2.5 py-1 font-mono text-[11px] font-bold transition-colors ${
+                mode === "cmd" ? "bg-white/15 text-white" : "text-white/40 hover:text-white/80"
+              }`}
+            >
+              CMD
+            </button>
+            <button
+              onClick={() => { setMode("ps"); }}
+              className={`rounded-md px-2.5 py-1 font-mono text-[11px] font-bold transition-colors ${
+                mode === "ps" ? "bg-white/15 text-white" : "text-white/40 hover:text-white/80"
+              }`}
+            >
+              PowerShell
+            </button>
+          </div>
         </div>
         <div
           ref={outputRef}
-          className="h-[420px] overflow-y-auto px-4 py-3 font-mono text-sm leading-relaxed text-white/90"
+          className="h-[380px] overflow-y-auto px-3 py-3 font-mono text-xs leading-relaxed text-white/90 sm:h-[460px] sm:px-4 sm:text-sm"
         >
           {entries.map((entry, i) => (
             <div
               key={i}
               className={`whitespace-pre-wrap break-words ${
-                entry.kind === "cmd" ? "text-white" : entry.kind === "ok" ? "text-green-400" : entry.kind === "warn" ? "text-amber-400" : "text-white/70"
+                entry.kind === "cmd"
+                  ? "font-semibold text-white"
+                  : entry.kind === "ok"
+                    ? "text-green-400"
+                    : entry.kind === "err"
+                      ? "text-red-400"
+                      : entry.kind === "warn"
+                        ? "text-amber-400"
+                        : entry.text.trimStart().startsWith("<DIR>")
+                          ? "text-sky-300"
+                          : "text-white/70"
               }`}
             >
               {entry.text}
             </div>
           ))}
           <div className="flex items-center gap-0">
-            <span className="shrink-0 whitespace-pre text-green-400">{ended ? "" : `${promptString(cwd)}`}</span>
+            <span className={`shrink-0 whitespace-pre ${mode === "ps" ? "text-yellow-300" : "text-green-400"}`}>{ended ? "" : `${promptString(cwd, mode)}`}</span>
             {ended ? (
               <span className="text-white/70">{isEs ? "Sesión cerrada. Pulsa «Reiniciar terminal» para volver a empezar." : "Session closed. Press «Reset terminal» to start again."}</span>
             ) : (
@@ -533,7 +569,7 @@ export default function WindowsTerminal({ locale }: Props) {
                 autoFocus
                 spellCheck={false}
                 autoComplete="off"
-                className="w-full bg-transparent font-mono text-sm text-white outline-none"
+                className="w-full bg-transparent font-mono text-xs text-white outline-none sm:text-sm [caret-color:#4ade80]"
                 aria-label={isEs ? "Comandos de la terminal" : "Terminal commands"}
               />
             )}
