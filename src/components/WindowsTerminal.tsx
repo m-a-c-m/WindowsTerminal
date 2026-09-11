@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { MdFullscreen, MdFullscreenExit } from "react-icons/md";
 import {
   executeLine,
   promptString,
@@ -256,6 +257,43 @@ export default function WindowsTerminal({ locale }: Props) {
   const [ended, setEnded] = useState(false);
   const [cmdsRun, setCmdsRun] = useState<string[]>([]);
   const [mode, setMode] = useState<"cmd" | "ps">("cmd");
+  const [fontSize, setFontSize] = useState<"base" | "lg" | "xl">("base");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const windowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`${STORAGE_KEY}-fs`);
+      if (raw === "base" || raw === "lg" || raw === "xl") setFontSize(raw);
+    } catch {}
+  }, []);
+
+  const changeFontSize = useCallback((next: "base" | "lg" | "xl") => {
+    setFontSize(next);
+    try { localStorage.setItem(`${STORAGE_KEY}-fs`, next); } catch {}
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    if (!windowRef.current) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void windowRef.current.requestFullscreen().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  const fontCls = fontSize === "base"
+    ? "text-xs sm:text-sm"
+    : fontSize === "lg"
+      ? "text-sm sm:text-base"
+      : "text-base sm:text-lg";
 
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -505,15 +543,44 @@ export default function WindowsTerminal({ locale }: Props) {
       )}
 
       <div
-        className="overflow-hidden rounded-2xl border border-white/15 bg-black"
+        ref={windowRef}
+        className={`overflow-hidden border border-white/15 bg-black ${
+          isFullscreen ? "flex h-screen flex-col rounded-none" : "rounded-2xl"
+        }`}
         onClick={() => inputRef.current?.focus()}
       >
         <div className="flex items-center gap-2 border-b border-white/10 bg-white/5 px-3 py-2 sm:px-4">
-          <span className="h-3 w-3 rounded-full bg-red-500/80" />
-          <span className="h-3 w-3 rounded-full bg-yellow-500/80" />
-          <span className="h-3 w-3 rounded-full bg-green-500/80" />
-          <span className="ml-2 hidden font-mono text-xs text-white/50 sm:inline">{mode === "ps" ? "powershell.exe" : "cmd.exe"} — {pathToString(cwd)}</span>
+          {!isFullscreen && (
+            <>
+              <span className="h-3 w-3 rounded-full bg-red-500/80" />
+              <span className="h-3 w-3 rounded-full bg-yellow-500/80" />
+              <span className="h-3 w-3 rounded-full bg-green-500/80" />
+              <span className="ml-2 hidden font-mono text-xs text-white/50 sm:inline">{mode === "ps" ? "powershell.exe" : "cmd.exe"} — {pathToString(cwd)}</span>
+            </>
+          )}
+          {isFullscreen && <span className="font-mono text-xs text-white/50">{mode === "ps" ? "powershell.exe" : "cmd.exe"} — {pathToString(cwd)}</span>}
           <div className="ml-auto flex items-center gap-1">
+            <div className="mr-1 hidden items-center gap-1 rounded-md border border-white/10 p-0.5 sm:flex">
+              {(["base", "lg", "xl"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => changeFontSize(s)}
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition-colors ${
+                    fontSize === s ? "bg-white/15 text-white" : "text-white/40 hover:text-white/80"
+                  }`}
+                  title={isEs ? "Tamaño de letra (para proyectar)" : "Font size (for projecting)"}
+                >
+                  {s === "base" ? "A" : s === "lg" ? "A+" : "A++"}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={toggleFullscreen}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+              title={isEs ? "Pantalla completa para proyectar" : "Fullscreen for projecting"}
+            >
+              {isFullscreen ? <MdFullscreenExit /> : <MdFullscreen />}
+            </button>
             <button
               onClick={() => { setMode("cmd"); }}
               className={`rounded-md px-2.5 py-1 font-mono text-[11px] font-bold transition-colors ${
@@ -534,7 +601,9 @@ export default function WindowsTerminal({ locale }: Props) {
         </div>
         <div
           ref={outputRef}
-          className="h-[380px] overflow-y-auto px-3 py-3 font-mono text-xs leading-relaxed text-white/90 sm:h-[460px] sm:px-4 sm:text-sm"
+          className={`overflow-y-auto px-3 py-3 font-mono leading-relaxed text-white/90 sm:px-4 ${
+            isFullscreen ? "min-h-0 flex-1" : "h-[380px] sm:h-[460px]"
+          } ${fontCls}`}
         >
           {entries.map((entry, i) => (
             <div
@@ -569,7 +638,7 @@ export default function WindowsTerminal({ locale }: Props) {
                 autoFocus
                 spellCheck={false}
                 autoComplete="off"
-                className="w-full bg-transparent font-mono text-xs text-white outline-none sm:text-sm [caret-color:#4ade80]"
+                className="w-full bg-transparent font-mono text-white outline-none [caret-color:#4ade80]"
                 aria-label={isEs ? "Comandos de la terminal" : "Terminal commands"}
               />
             )}
@@ -580,8 +649,8 @@ export default function WindowsTerminal({ locale }: Props) {
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted/70">
         <span>
           {isEs
-            ? "↑/↓ historial · Tab completa nombres · Ctrl+L limpia · Ctrl+C cancela la línea"
-            : "↑/↓ history · Tab completes names · Ctrl+L clears · Ctrl+C cancels the line"}
+            ? "↑/↓ historial · Tab completa nombres · Ctrl+L limpia · Ctrl+C cancela · A+/A++ letra grande y pantalla completa para proyectar en clase"
+            : "↑/↓ history · Tab completes · Ctrl+L clears · Ctrl+C cancels · A+/A++ larger font and fullscreen to project in class"}
         </span>
         {doneLessons.length > 0 && (
           <span className="font-semibold text-green-400">
