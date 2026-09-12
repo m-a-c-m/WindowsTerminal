@@ -32,6 +32,8 @@ export interface CmdResult {
   env?: Record<string, string>;
   sendTo?: { target: number; message: string };
   openTab?: { mode: "cmd" | "ps" };
+  waitInput?: { variable: string; prompt: string };
+  title?: string;
 }
 
 export const HOME = ["Users", "Estudiante"];
@@ -1003,7 +1005,7 @@ export function executeLine(state: FsState, cwd: string[], rawLine: string, opts
       return ok(state, cwd, [isEs ? "Presione una tecla para continuar . . ." : "Press any key to continue . . ."]);
 
     case "title":
-      return ok(state, cwd, []);
+      return { lines: [], state, cwd, clear: false, exit: false, title: args.join(" ") };
 
     case "net": {
       if (args[0]?.toLowerCase() !== "user") {
@@ -1240,6 +1242,17 @@ export function executeLine(state: FsState, cwd: string[], rawLine: string, opts
       if (args.length === 0) {
         const names = Object.keys(env).sort();
         return ok(state, cwd, names.map((k) => `${k}=${env[k]}`));
+      }
+      const flagP = args.some((a) => /^\/p$/i.test(a));
+      if (flagP) {
+        const rest = args.filter((a) => !/^\/p$/i.test(a)).join(" ");
+        const eqPos = rest.indexOf("=");
+        if (eqPos <= 0) {
+          return ok(state, cwd, [isEs ? "Uso: SET /P variable=pregunta" : "Usage: SET /P variable=prompt"]);
+        }
+        const name = rest.slice(0, eqPos).trim();
+        const promptText = rest.slice(eqPos + 1).trim();
+        return { lines: [], state, cwd, clear: false, exit: false, waitInput: { variable: name, prompt: promptText } };
       }
       const joined = args.join(" ");
       const eq = joined.indexOf("=");
