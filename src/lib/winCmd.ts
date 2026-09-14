@@ -11,15 +11,18 @@ import {
   movePath,
   countTree,
   matchWildcard,
+  cloneState,
   type FsNode,
   type FsState,
 } from "./terminalFs";
+import { runBatch, type BatchPending } from "./cmdBatch";
 
 export interface CmdOptions {
   isEs: boolean;
   mode?: "cmd" | "ps";
   env?: Record<string, string>;
   history?: string[];
+  pending?: { line: number; variable: string; value: string; source: string };
 }
 
 export interface CmdResult {
@@ -33,6 +36,7 @@ export interface CmdResult {
   sendTo?: { target: number; message: string };
   openTab?: { mode: "cmd" | "ps" };
   waitInput?: { variable: string; prompt: string };
+  pending?: BatchPending;
   title?: string;
 }
 
@@ -276,6 +280,72 @@ function redirectAtEnd(line: string): { command: string; file: string; append: b
   const at = line.lastIndexOf(m[1]);
   const command = line.slice(0, at).trim();
   return { command, file: m[2], append: m[1] === ">>" };
+}
+
+function splitWinPipe(line: string): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let quote = "";
+  for (const c of line) {
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = "";
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === "|") {
+      parts.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  parts.push(cur.trim());
+  if (parts.some((p) => p.length === 0)) return [];
+  return parts.length >= 2 ? parts : [];
+}
+
+function applyWinFilter(state: FsState, cwd: string[], tokens: string[], stdin: string[], isEs: boolean): { lines: string[]; error?: string; state?: FsState } {
+  const cmdName = tokens[0]?.toLowerCase();
+  const flags = tokens.slice(1).filter((a) => a.startsWith("/")).map((a) => a.slice(1).toLowerCase());
+  const rest = tokens.slice(1).filter((a) => !a.startsWith("/"));
+  if (cmdName === "find") {
+    const pattern = rest[0]?.replace(/^"|"$/g, "");
+    if (!pattern) return { lines: [], error: isEs ? "FIND: faltan parámetros" : "FIND: missing parameters" };
+    const inverse = flags.includes("v");
+    const insensitive = true;
+    const numbered = flags.includes("n");
+    const hits = stdin.map((l, i) => ({ l, i })).filter((x) => {
+      const hit = insensitive ? x.l.toLowerCase().includes(pattern.toLowerCase()) : x.l.includes(pattern);
+      return inverse ? !hit : hit;
+    });
+    if (flags.includes("c")) return { lines: [String(hits.length)] };
+    return { lines: hits.map((x) => (numbered ? `[${x.i + 1}]${x.l}` : x.l)) };
+  }
+  if (cmdName === "findstr") {
+    const pattern = rest[0]?.replace(/^"|"$/g, "");
+    if (!pattern) return { lines: [], error: isEs ? "FINDSTR: falta la cadena de búsqueda" : "FINDSTR: missing search string" };
+    const inverse = flags.includes("v");
+    const insensitive = flags.includes("i");
+    const numbered = flags.includes("n");
+    const hits = stdin.map((l, i) => ({ l, i })).filter((x) => {
+      const hit = insensitive ? x.l.toLowerCase().includes(pattern.toLowerCase()) : x.l.includes(pattern);
+      return inverse ? !hit : hit;
+    });
+    return { lines: hits.map((x) => (numbered ? `${x.i + 1}:${x.l}` : x.l)) };
+  }
+  if (cmdName === "more") {
+    return { lines: stdin };
+  }
+  if (cmdName === "sort") {
+    const sorted = [...stdin].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    return { lines: flags.includes("r") ? sorted.reverse() : sorted };
+  }
+  return { lines: [], error: isEs ? `El comando '${cmdName}' no se admite en una tubería.` : `The command '${cmdName}' is not supported in a pipe.` };
 }
 
 function treeLines(node: FsNode, prefix: string, showFiles: boolean, ascii: boolean): string[] {
@@ -554,12 +624,45 @@ function pingLines(host: string, ip: string, local: boolean, count: number, isEs
   return [header, ...replies, ...stats];
 }
 
-export function executeLine(state: FsState, cwd: string[], rawLine: string, opts: CmdOptions): CmdResult {
-  const isEs = opts.isEs;
+export function executeLine(state: FsState, cwd: string[], rawLine: string, opts: CmdOptions): CmdResult {  const isEs = opts.isEs;
   const env: Record<string, string> = { ...DEFAULT_ENV, ...(opts.env ?? {}) };
   const readEnv: Record<string, string> = { ...env, CD: pathToString(cwd) };
 
+  if (opts.pending?.source) {
+    const outcome = runBatch(state, cwd, opts.pending.source, { ...opts, pending: undefined }, executeLine, {
+      variable: opts.pending.variable,
+      line: opts.pending.line,
+      value: rawLine,
+    });
+    return {
+      lines: outcome.lines,
+      state: outcome.state,
+      cwd: outcome.cwd,
+      clear: false,
+      exit: false,
+      error: outcome.error,
+      env: outcome.env,
+      pending: outcome.pending ?? undefined,
+    };
+  }
+
   if (rawLine.trim().length === 0) return ok(state, cwd, []);
+
+  const lower0 = rawLine.trim().toLowerCase();
+  const firstWord = tokenize(lower0)[0] ?? "";
+  const batchCandidate = firstWord === "call" ? (tokenize(lower0)[1] ?? "") : firstWord;
+  if (batchCandidate.endsWith(".bat") || batchCandidate.endsWith(".cmd")) {
+    const node = getNode(state, resolvePath(cwd, batchCandidate).value);
+    if (!node || node.kind !== "file") {
+      return { lines: [isEs ? `No se encuentra el archivo por lotes '${batchCandidate}'.` : `Batch file '${batchCandidate}' not found.`], state, cwd, clear: false, exit: false, error: true };
+    }
+    const scriptArgs = firstWord === "call" ? tokenize(rawLine.trim()).slice(2) : tokenize(rawLine.trim()).slice(1);
+    const outcome = runBatch(state, cwd, node.content ?? "", { ...opts, env }, executeLine, undefined, scriptArgs);
+    if (outcome.pending) {
+      return { lines: outcome.lines, state: outcome.state, cwd: outcome.cwd, clear: false, exit: false, env: outcome.env, pending: outcome.pending };
+    }
+    return { lines: outcome.lines, state: outcome.state, cwd: outcome.cwd, clear: false, exit: outcome.exited, error: outcome.error, env: outcome.env };
+  }
 
   const redirect = redirectAtEnd(rawLine.trim());
   if (redirect) {
@@ -579,6 +682,21 @@ export function executeLine(state: FsState, cwd: string[], rawLine: string, opts
   }
 
   const line = expandEnv(rawLine, readEnv);
+  const pipeParts = splitWinPipe(line);
+  if (pipeParts.length >= 2) {
+    const firstRes = executeLine(state, cwd, pipeParts[0], opts);
+    if (firstRes.error) return firstRes;
+    let stdinLines = firstRes.lines;
+    let st = firstRes.state;
+    for (const seg of pipeParts.slice(1)) {
+      const segTokens = tokenize(seg);
+      const filtered = applyWinFilter(st, cwd, segTokens, stdinLines, isEs);
+      if (filtered.error) return { lines: [filtered.error], state, cwd, clear: false, exit: false, error: true };
+      stdinLines = filtered.lines;
+      if (filtered.state) st = filtered.state;
+    }
+    return { ...firstRes, lines: stdinLines, state: st, env };
+  }
   const tokens = tokenize(line);
   if (tokens.length === 0) return ok(state, cwd, []);
   const cmd = tokens[0].toLowerCase();
@@ -1006,6 +1124,88 @@ export function executeLine(state: FsState, cwd: string[], rawLine: string, opts
 
     case "title":
       return { lines: [], state, cwd, clear: false, exit: false, title: args.join(" ") };
+
+    case "reg": {
+      const op = args[0]?.toLowerCase();
+      const key = args[1];
+      if (!op || !key) {
+        return { lines: [isEs ? "Uso: REG ADD clave /v nombre /d valor | REG QUERY clave | REG DELETE clave [/v nombre]" : "Usage: REG ADD key /v name /d value | REG QUERY key | REG DELETE key [/v name]"], state, cwd, clear: false, exit: false, error: true };
+      }
+      const validRoot = /^h(k(cu|lm|cr|ku|cc)|ey_(classes_root|current_user|local_machine|users|current_config))\\?/i.test(key ?? "");
+      if (!validRoot && op !== "query") {
+        return ok(state, cwd, [isEs ? "Uso: REG ADD clave /v nombre /d valor | REG QUERY clave | REG DELETE clave [/v nombre]" : "Usage: REG ADD key /v name /d value | REG QUERY key | REG DELETE key [/v name]"]);
+      }
+      const flagValue = (flag: string): string => {
+        const idx = args.findIndex((a) => a.toLowerCase() === flag);
+        return idx >= 0 ? args[idx + 1] ?? "" : "";
+      };
+        const registry: Record<string, string> = { ...(state.reg ?? {}) };
+        if (op === "add") {
+        const valueName = flagValue("/v") || "(Valor predeterminado)";
+        const data = flagValue("/d");
+        if (!valueName) {
+          return ok(state, cwd, [isEs ? "Uso: REG ADD clave /v nombre /d valor" : "Usage: REG ADD key /v name /d value"]);
+        }
+        registry[`${key}\\${valueName}`] = data;
+        const next = cloneState(state);
+        next.reg = registry;
+        return ok(next, cwd, [isEs ? "La operación se completó correctamente." : "The operation completed successfully."]);
+      }
+      if (op === "query") {
+        const prefix = `${key.toLowerCase()}\\`;
+        const rows: string[] = [];
+        const subkeys = new Set<string>();
+        const exact: string[] = [];
+        for (const [full, value] of Object.entries(registry)) {
+          if (!full.toLowerCase().startsWith(prefix) && full.toLowerCase() !== key.toLowerCase()) continue;
+          const lastSep = full.lastIndexOf("\\");
+          const parent = lastSep > 0 ? full.slice(0, lastSep) : full;
+          if (parent.toLowerCase() === key.toLowerCase()) {
+            const leaf = full.slice(lastSep + 1);
+            exact.push(`    ${leaf}    REG_SZ    ${value}`);
+          } else {
+            subkeys.add(full);
+          }
+        }
+        for (const sk of subkeys) rows.push(`    ${sk}`);
+        rows.push(...exact);
+        if (rows.length === 0 && /microsoft|windows/i.test(key)) {
+          return ok(state, cwd, [
+            "",
+            key,
+            "    ProgramFilesDir    REG_SZ    C:\\Program Files",
+            "    ProductName        REG_SZ    Windows 10 Pro",
+            "    CurrentBuild       REG_SZ    19045",
+            "",
+          ]);
+        }
+        if (rows.length === 0) {
+          return { lines: [isEs ? `ERROR: El sistema no encuentra la clave del Registro especificada.` : `ERROR: The system was unable to find the specified registry key.`], state, cwd, clear: false, exit: false, error: true };
+        }
+        return ok(state, cwd, ["", key, "", ...rows, ""]);
+      }
+      if (op === "delete") {
+        const valueName = flagValue("/v");
+        const prefix = valueName ? `${key.toLowerCase()}\\${valueName.toLowerCase()}` : `${key.toLowerCase()}`;
+        let found = false;
+        const registryDel: Record<string, string> = {};
+        for (const [full, value] of Object.entries(state.reg ?? {})) {
+          const target = valueName ? full.toLowerCase() === prefix : full.toLowerCase().startsWith(prefix);
+          if (target) {
+            found = true;
+            continue;
+          }
+          registryDel[full] = value;
+        }
+        if (!found) {
+          return { lines: [isEs ? "ERROR: El sistema no encuentra la clave o el valor especificados." : "ERROR: The system was unable to find the specified key or value."], state, cwd, clear: false, exit: false, error: true };
+        }
+        const next = cloneState(state);
+        next.reg = registryDel;
+        return ok(next, cwd, [isEs ? "La operación se completó correctamente." : "The operation completed successfully."]);
+      }
+      return ok(state, cwd, [isEs ? "Operaciones de REG disponibles: ADD, QUERY, DELETE." : "Available REG operations: ADD, QUERY, DELETE."]);
+    }
 
     case "net": {
       if (args[0]?.toLowerCase() !== "user") {

@@ -6,6 +6,7 @@ import {
   executeLine,
   promptString,
   HOME,
+  type CmdOptions,
 } from "@/lib/winCmd";
 import {
   createInitialFs,
@@ -46,6 +47,7 @@ interface Session {
   search: ReverseSearch | null;
   killRing: string;
   awaiting: { variable: string; prompt: string } | null;
+  pendingScript: { variable: string; resumeLine: number; source: string } | null;
   title: string | null;
   env: Record<string, string>;
   ended: boolean;
@@ -405,7 +407,7 @@ export default function WindowsTerminal({ locale }: Props) {
 
   const [fs, setFs] = useState<FsState>(createInitialFs);
   const [sessions, setSessions] = useState<Session[]>(() => [
-    { id: 1, mode: "cmd", cwd: [...HOME], entries: bannerLines(locale === "es").map((t) => ({ kind: "out" as const, text: t })), input: "", cursor: 0, histIdx: -1, saved: "", search: null, killRing: "", awaiting: null, title: null, env: {}, ended: false },
+    { id: 1, mode: "cmd", cwd: [...HOME], entries: bannerLines(locale === "es").map((t) => ({ kind: "out" as const, text: t })), input: "", cursor: 0, histIdx: -1, saved: "", search: null, killRing: "", awaiting: null, pendingScript: null, title: null, env: {}, ended: false },
   ]);
   const [activeId, setActiveId] = useState(1);
   const [unread, setUnread] = useState<Record<number, number>>({});
@@ -640,6 +642,7 @@ export default function WindowsTerminal({ locale }: Props) {
       search: null,
       killRing: "",
       awaiting: null,
+      pendingScript: null,
       title: null,
       env: {},
       ended: false,
@@ -654,7 +657,7 @@ export default function WindowsTerminal({ locale }: Props) {
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id);
       if (next.length === 0) {
-        const fresh: Session = { id: nextIdRef.current++, mode: "cmd", cwd: [...HOME], entries: bannerLines(isEs).map((t) => ({ kind: "out" as const, text: t })), input: "", cursor: 0, histIdx: -1, saved: "", search: null, killRing: "", awaiting: null, title: null, env: {}, ended: false };
+        const fresh: Session = { id: nextIdRef.current++, mode: "cmd", cwd: [...HOME], entries: bannerLines(isEs).map((t) => ({ kind: "out" as const, text: t })), input: "", cursor: 0, histIdx: -1, saved: "", search: null, killRing: "", awaiting: null, pendingScript: null, title: null, env: {}, ended: false };
         setActiveId(fresh.id);
         return [fresh];
       }
@@ -670,7 +673,7 @@ export default function WindowsTerminal({ locale }: Props) {
 
   const resetTerminal = useCallback(() => {
     setFs(createInitialFs());
-    setSessions([{ id: nextIdRef.current++, mode: "cmd", cwd: [...HOME], entries: bannerLines(isEs).map((t) => ({ kind: "out" as const, text: t })), input: "", cursor: 0, histIdx: -1, saved: "", search: null, killRing: "", awaiting: null, title: null, env: {}, ended: false }]);
+    setSessions([{ id: nextIdRef.current++, mode: "cmd", cwd: [...HOME], entries: bannerLines(isEs).map((t) => ({ kind: "out" as const, text: t })), input: "", cursor: 0, histIdx: -1, saved: "", search: null, killRing: "", awaiting: null, pendingScript: null, title: null, env: {}, ended: false }]);
     setActiveId(-1);
     setActiveLesson(null);
     setShowHint(false);
@@ -723,7 +726,11 @@ export default function WindowsTerminal({ locale }: Props) {
     setCmdHistory(nextHistory);
     persist(doneLessons, nextHistory);
 
-    const result = executeLine(fs, cwd, line, { isEs, mode, env, history: cmdHistory });
+    const opts: CmdOptions = { isEs, mode, env, history: cmdHistory };
+    if (session.pendingScript) {
+      opts.pending = { line: session.pendingScript.resumeLine, variable: session.pendingScript.variable, value: line, source: session.pendingScript.source };
+    }
+    const result = executeLine(fs, cwd, line, opts);
 
     if (result.clear) {
       patchSession(session.id, { cwd: result.cwd, env: result.env ?? env, entries: [] });
@@ -732,7 +739,7 @@ export default function WindowsTerminal({ locale }: Props) {
       return;
     }
     appendEntries(session.id, result.lines.map((t) => ({ kind: (result.error ? "err" : "out") as OutputEntry["kind"], text: t })));
-    patchSession(session.id, { cwd: result.cwd, env: result.env ?? env });
+    patchSession(session.id, { cwd: result.cwd, env: result.env ?? env, pendingScript: result.pending ?? null });
     setFs(result.state);
     if (result.waitInput) {
       appendEntries(session.id, [{ kind: "warn", text: result.waitInput.prompt }]);

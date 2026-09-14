@@ -9,6 +9,7 @@ export interface FsNode {
 
 export interface FsState {
   root: FsNode;
+  reg?: Record<string, string>;
 }
 
 export type FsError =
@@ -40,7 +41,9 @@ function cloneNode(node: FsNode): FsNode {
 }
 
 export function cloneState(state: FsState): FsState {
-  return { root: cloneNode(state.root) };
+  const out: FsState = { root: cloneNode(state.root) };
+  if (state.reg) out.reg = { ...state.reg };
+  return out;
 }
 
 export function createInitialFs(): FsState {
